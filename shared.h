@@ -15,7 +15,7 @@
 
 namespace Opcode {
 enum Opcodes {
-  func_encode, func_decode
+  func_encode, func_decode, func_getbuf
 };
 };
 

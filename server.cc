@@ -12,20 +12,73 @@
  */
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <l4/re/env>
 #include <l4/re/util/cap_alloc>
 #include <l4/re/util/object_registry>
+#include <l4/re/dataspace>
 #include <l4/cxx/ipc_server>
 
 #include "shared.h"
 
 static L4Re::Util::Registry_server<> server;
 
+enum
+{
+  DS_SIZE = 4 << 12,
+};
+
+static char *get_ds(L4::Cap<L4Re::Dataspace> *_ds)
+{
+  *_ds = L4Re::Util::cap_alloc.alloc<L4Re::Dataspace>();
+  if (!(*_ds).is_valid())
+    {
+      printf("Dataspace allocation failed.\n");
+      return 0;
+    }
+
+  int err =  L4Re::Env::env()->mem_alloc()->alloc(DS_SIZE, *_ds, 0);
+  if (err < 0)
+    {
+      printf("mem_alloc->alloc() failed.\n");
+      L4Re::Util::cap_alloc.free(*_ds);
+      return 0;
+    }
+
+  /*
+   * Attach DS to local address space
+   */
+  char *_addr = 0;
+  err =  L4Re::Env::env()->rm()->attach(&_addr, (*_ds)->size(),
+                                        L4Re::Rm::Search_addr,
+                                        *_ds);
+  if (err < 0)
+    {
+      printf("Error attaching data space: %s\n", l4sys_errtostr(err));
+      L4Re::Util::cap_alloc.free(*_ds);
+      return 0;
+    }
+
+
+  /*
+   * Success! Write something to DS.
+   */
+  printf("Attached DS\n");
+  static char const * const msg = "[DS] Hello from server!";
+  snprintf(_addr, strlen(msg) + 1, msg);
+
+  return _addr;
+}
+
+static L4::Cap<L4Re::Dataspace> ds;
+
 class Encoding_server : public L4::Server_object
 {
 public:
   int dispatch(l4_umword_t obj, L4::Ipc::Iostream &ios);
 };
+
+static char *shm_addr;
 
 int
 Encoding_server::dispatch(l4_umword_t, L4::Ipc::Iostream &ios)
@@ -53,19 +106,17 @@ Encoding_server::dispatch(l4_umword_t, L4::Ipc::Iostream &ios)
 
       for (l4_uint32_t i = 0; i < len; i++)
       {
-        l4_umword_t tmp;
-        ios >> tmp;
-
         if (opcode == Opcode::func_encode)
-          tmp += 3 * 0x01010101; // Caesar "cipher"; ugly hack included
+          shm_addr[i] += 3; // Caesar "cipher"
         else
-          tmp -= 3 * 0x01010101;
-
-        ios << tmp;
+          shm_addr[i] -= 3;
       }
 
       return L4_EOK;
     }
+    case Opcode::func_getbuf:
+      ios << ds;
+      return L4_EOK;
     default:
       return -L4_ENOSYS;
     }
@@ -75,6 +126,12 @@ int
 main()
 {
   static Encoding_server enc;
+
+  if (!(shm_addr = get_ds(&ds)))
+  {
+    printf("get_ds() failed\n");
+    return 7;
+  }
 
   // Register encoding server
   if (!server.registry()->register_obj(&enc, "enc_server").is_valid())
